@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lane-heatmap-data · AamirTechs Tools</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f6f8fb; color: #1c2733; }
+  header { background: #0b1f3a; color: #ffffff; padding: 28px 20px 22px; border-bottom: 4px solid #d4a72c; }
+  header .wrap { max-width: 960px; margin: 0 auto; }
+  header h1 { margin: 0 0 6px; font-size: 28px; }
+  header p { margin: 0; color: #c9d6e8; font-size: 15px; }
+  main { max-width: 960px; margin: 24px auto 40px; padding: 0 16px; }
+  .card { background: #ffffff; border-radius: 12px; box-shadow: 0 2px 10px rgba(11, 31, 58, 0.08); padding: 22px; }
+  label { display: block; font-weight: 600; margin: 16px 0 6px; font-size: 14px; }
+  label:first-child { margin-top: 0; }
+  textarea { width: 100%; min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; padding: 10px; border: 1px solid #c8d2de; border-radius: 8px; background: #fbfcfe; }
+  select { padding: 9px 10px; border: 1px solid #c8d2de; border-radius: 8px; font-size: 14px; background: #ffffff; }
+  .checkrow { margin-top: 16px; }
+  .checkrow label { display: inline; font-weight: 400; margin: 0 0 0 4px; }
+  .buttons { margin: 20px 0 6px; display: flex; flex-wrap: wrap; gap: 10px; }
+  button { border: 0; border-radius: 8px; padding: 11px 20px; font-size: 15px; cursor: pointer; }
+  #run { background: #0b1f3a; color: #ffffff; font-weight: 600; }
+  #run:hover { background: #143058; }
+  .secondary { background: #eef2f7; color: #0b1f3a; border: 1px solid #c8d2de; }
+  .secondary:hover { background: #e2eaf3; }
+  #download { background: #d4a72c; color: #0b1f3a; font-weight: 600; }
+  pre { background: #0b1f3a; color: #e8eef6; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.5; min-height: 60px; white-space: pre; }
+  footer { max-width: 960px; margin: 0 auto 30px; padding: 0 16px; color: #5a6a7d; font-size: 13px; text-align: center; }
+  footer a { color: #0b1f3a; }
+  .hint { font-weight: 400; color: #5a6a7d; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>lane-heatmap-data</h1>
+    <p>Turn a lane book into a state pair rate matrix that shows which lanes pay best per mile.</p>
+  </div>
+</header>
+<main>
+  <div class="card">
+    <label for="file">Lane book JSON file <span class="hint">(or paste the lane book JSON below)</span></label>
+    <input type="file" id="file" accept=".json,application/json">
+    <label for="input">Lane book JSON</label>
+    <textarea id="input" placeholder="Paste lane book JSON here, or load the sample."></textarea>
+    <label for="format">Output format <span class="hint">(CLI --format)</span></label>
+    <select id="format">
+      <option value="md" selected>Markdown report (md)</option>
+      <option value="csv">CSV matrix (csv)</option>
+      <option value="both">Both (both)</option>
+    </select>
+    <div class="checkrow">
+      <input type="checkbox" id="check"><label for="check">Validate only (--check)</label>
+    </div>
+    <div class="buttons">
+      <button id="run" type="button">Run</button>
+      <button id="sample" type="button" class="secondary">Load sample</button>
+      <button id="download" type="button">Download report</button>
+    </div>
+    <pre id="output">Your lane rate heatmap will appear here.</pre>
+  </div>
+</main>
+<footer>
+  <p>Built by AamirTechs · <a href="https://aamirtechs.github.io/">All tools</a> · <a href="https://github.com/aamirtechs/lane-heatmap-data">Source</a></p>
+  <p>Privacy: this tool runs 100% in your browser, nothing is uploaded.</p>
+</footer>
+
+<script id="core">
+"use strict";
+/* Core logic: a faithful port of lane_heatmap (the __init__.py library
+   plus the CLI behavior in cli.py). Pure functions only, no DOM access.
+   window.runTool(inputText, options) -> report string.
+   inputText is the lane book JSON. options:
+     format  "md" (CLI default), "csv", or "both" (CLI --format)
+     check   boolean, validate only (CLI --check)
+   Rounding matches Python: round(x, 2) and "%.2f" both round the exact
+   binary double value, ties to even. That is done with exact BigInt
+   arithmetic on the IEEE 754 bits below. */
+
+function doubleToCents(x) {
+  /* Returns {neg, cents} where cents is a BigInt: round(x * 100),
+     ties to even, computed on the exact value of the double x. */
+  var buf = new DataView(new ArrayBuffer(8));
+  buf.setFloat64(0, x);
+  var hi = buf.getUint32(0);
+  var lo = buf.getUint32(4);
+  var neg = (hi >>> 31) === 1;
+  var expBits = (hi >>> 20) & 0x7ff;
+  var mant = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo);
+  var e;
+  if (expBits === 0) { e = -1074; }
+  else { mant = mant | (1n << 52n); e = expBits - 1075; }
+  var num = mant * 100n;
+  var cents;
+  if (e >= 0) { cents = num << BigInt(e); }
+  else {
+    var den = 1n << BigInt(-e);
+    var q = num / den;
+    var r = num % den;
+    var twice = r * 2n;
+    if (twice > den || (twice === den && q % 2n === 1n)) { q += 1n; }
+    cents = q;
+  }
+  return { neg: neg, cents: cents };
+}
+function fmt2f(x) {
+  /* Python "%.2f" % x */
+  var r = doubleToCents(x);
+  var digits = r.cents.toString();
+  while (digits.length < 3) { digits = "0" + digits; }
+  return (r.neg ? "-" : "") + digits.slice(0, digits.length - 2) + "." + digits.slice(digits.length - 2);
+}
+function pyRound2(x) {
+  /* Python round(x, 2): the double closest to the 2 decimal rounding. */
+  var r = doubleToCents(x);
+  var n = Number(r.cents);
+  return (r.neg ? -n : n) / 100;
+}
+function formatMoney(v) {
+  /* The library _format_money: whole dollars print without cents. */
+  if (Number.isInteger(v)) { return String(Math.trunc(v)); }
+  return fmt2f(v);
+}
+
+function pyRepr(v) {
+  if (v === null || v === undefined) { return "None"; }
+  if (v === true) { return "True"; }
+  if (v === false) { return "False"; }
+  if (typeof v === "string") {
+    return "'" + v.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t") + "'";
+  }
+  if (typeof v === "number") { return String(v); }
+  if (Array.isArray(v)) { return "[" + v.map(pyRepr).join(", ") + "]"; }
+  return String(v);
+}
+function typeName(v) {
+  if (v === null || v === undefined) { return "NoneType"; }
+  if (Array.isArray(v)) { return "list"; }
+  if (typeof v === "object") { return "dict"; }
+  if (typeof v === "boolean") { return "bool"; }
+  if (typeof v === "string") { return "str"; }
+  return "float";
+}
+function isNumber(v) { return typeof v === "number"; }
+
+var REQUIRED_FIELDS = ["origin_state", "destination_state", "rate", "miles"];
+
+function validateState(value, field, errors) {
+  if (typeof value !== "string") {
+    errors.push(field + " must be a string, got " + pyRepr(value));
+    return null;
+  }
+  var code = value.trim().toUpperCase();
+  if (code.length !== 2 || !/^[A-Z]+$/.test(code)) {
+    errors.push(field + " must be a two letter state code, got " + pyRepr(value));
+    return null;
+  }
+  return code;
+}
+function validatePositiveNumber(value, field, errors) {
+  if (!isNumber(value)) {
+    errors.push(field + " must be a number, got " + pyRepr(value));
+    return null;
+  }
+  var number = value;
+  if (!isFinite(number) || number <= 0) {
+    errors.push(field + " must be greater than zero, got " + pyRepr(value));
+    return null;
+  }
+  return number;
+}
+
+function validateLanes(data) {
+  var errors = [];
+  var lanes = [];
+  if (!Array.isArray(data)) {
+    return [[], ["input must be a JSON list of lanes, got " + typeName(data)]];
+  }
+  data.forEach(function (row, index) {
+    var prefix = "row " + index;
+    if (row === null || typeof row !== "object" || Array.isArray(row)) {
+      errors.push(prefix + ": lane must be an object, got " + pyRepr(row));
+      return;
+    }
+    var rowErrors = [];
+    REQUIRED_FIELDS.forEach(function (field) {
+      if (!(field in row)) { rowErrors.push(field + " is missing"); }
+    });
+    var origin = null, destination = null, rate = null, miles = null;
+    if ("origin_state" in row) { origin = validateState(row.origin_state, "origin_state", rowErrors); }
+    if ("destination_state" in row) { destination = validateState(row.destination_state, "destination_state", rowErrors); }
+    if ("rate" in row) { rate = validatePositiveNumber(row.rate, "rate", rowErrors); }
+    if ("miles" in row) { miles = validatePositiveNumber(row.miles, "miles", rowErrors); }
+    var loadCount = 1;
+    if ("load_count" in row) {
+      var raw = row.load_count;
+      if (typeof raw === "boolean" || typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+        rowErrors.push("load_count must be a positive integer, got " + pyRepr(raw));
+      } else { loadCount = raw; }
+    }
+    if (rowErrors.length) {
+      errors.push(prefix + ": " + rowErrors.join("; "));
+      return;
+    }
+    lanes.push({ origin_state: origin, destination_state: destination,
+      rate: rate, miles: miles, load_count: loadCount });
+  });
+  return [lanes, errors];
+}
+
+function aggregate(lanes) {
+  var grouped = new Map();
+  lanes.forEach(function (lane) {
+    var key = lane.origin_state + " " + lane.destination_state;
+    if (!grouped.has(key)) { grouped.set(key, []); }
+    grouped.get(key).push(lane);
+  });
+  var pairs = [];
+  grouped.forEach(function (rows) {
+    var loads = 0, totalRate = 0, totalRpm = 0;
+    var rates = [];
+    rows.forEach(function (row) {
+      loads += row.load_count;
+      totalRate += row.rate * row.load_count;
+      totalRpm += (row.rate / row.miles) * row.load_count;
+      rates.push(row.rate);
+    });
+    pairs.push({
+      origin_state: rows[0].origin_state,
+      destination_state: rows[0].destination_state,
+      pair: rows[0].origin_state + ">" + rows[0].destination_state,
+      average_rate: pyRound2(totalRate / loads),
+      average_rate_per_mile: pyRound2(totalRpm / loads),
+      load_count: loads,
+      min_rate: Math.min.apply(null, rates),
+      max_rate: Math.max.apply(null, rates)
+    });
+  });
+  pairs.sort(function (a, b) {
+    if (a.average_rate_per_mile !== b.average_rate_per_mile) {
+      return b.average_rate_per_mile - a.average_rate_per_mile;
+    }
+    return a.pair < b.pair ? -1 : (a.pair > b.pair ? 1 : 0);
+  });
+  var totalLoads = 0;
+  lanes.forEach(function (lane) { totalLoads += lane.load_count; });
+  var summary = {
+    total_lanes: lanes.length,
+    total_loads: totalLoads,
+    pair_count: pairs.length,
+    best_rate_per_mile_pair: pairs.length ? pairs[0].pair : null,
+    best_rate_per_mile: pairs.length ? pairs[0].average_rate_per_mile : null,
+    worst_rate_per_mile_pair: pairs.length ? pairs[pairs.length - 1].pair : null,
+    worst_rate_per_mile: pairs.length ? pairs[pairs.length - 1].average_rate_per_mile : null
+  };
+  return { pairs: pairs, summary: summary };
+}
+
+function renderCsv(report) {
+  var lines = ["origin_state,destination_state,average_rate,average_rate_per_mile,load_count,min_rate,max_rate"];
+  report.pairs.forEach(function (pair) {
+    lines.push(pair.origin_state + "," + pair.destination_state + "," +
+      fmt2f(pair.average_rate) + "," + fmt2f(pair.average_rate_per_mile) + "," +
+      pair.load_count + "," + formatMoney(pair.min_rate) + "," + formatMoney(pair.max_rate));
+  });
+  return lines.join("\n") + "\n";
+}
+
+function renderMarkdown(report) {
+  var summary = report.summary;
+  var lines = [
+    "# Lane rate heatmap",
+    "",
+    "Total lanes: " + summary.total_lanes,
+    "Total loads: " + summary.total_loads,
+    "State pairs: " + summary.pair_count
+  ];
+  if (summary.best_rate_per_mile_pair !== null) {
+    lines.push("Best rate per mile: " + summary.best_rate_per_mile_pair + " at $" + fmt2f(summary.best_rate_per_mile) + "/mile");
+    lines.push("Worst rate per mile: " + summary.worst_rate_per_mile_pair + " at $" + fmt2f(summary.worst_rate_per_mile) + "/mile");
+  }
+  lines.push("");
+  lines.push("| Origin | Destination | Avg rate | Avg $/mile | Loads | Min rate | Max rate |");
+  lines.push("|--------|-------------|----------|------------|-------|----------|----------|");
+  report.pairs.forEach(function (pair) {
+    lines.push("| " + pair.origin_state + " | " + pair.destination_state + " | $" +
+      fmt2f(pair.average_rate) + " | $" + fmt2f(pair.average_rate_per_mile) + " | " +
+      pair.load_count + " | $" + formatMoney(pair.min_rate) + " | $" + formatMoney(pair.max_rate) + " |");
+  });
+  return lines.join("\n") + "\n";
+}
+
+window.runTool = function (inputText, options) {
+  options = options || {};
+  var data;
+  try { data = JSON.parse(inputText || ""); }
+  catch (e) { return "error: invalid JSON: " + e.message + "\n"; }
+  var res = validateLanes(data);
+  var lanes = res[0], errors = res[1];
+  if (errors.length) {
+    return errors.map(function (e) { return "error: " + e; }).join("\n") + "\n";
+  }
+  if (options.check) {
+    return "OK: " + lanes.length + " lane(s) valid, 0 errors\n";
+  }
+  var report = aggregate(lanes);
+  var format = options.format || "md";
+  var out = "";
+  if (format === "md" || format === "both") { out += renderMarkdown(report); }
+  if (format === "csv" || format === "both") { out += renderCsv(report); }
+  return out;
+};
+</script>
+
+<script>
+"use strict";
+var SAMPLE_LANES = `[{"destination_state":"OK","load_count":3,"miles":400,"origin_state":"TX","rate":950},{"destination_state":"OK","miles":420,"origin_state":"TX","rate":1100},{"destination_state":"GA","load_count":2,"miles":900,"origin_state":"TX","rate":1800},{"destination_state":"PA","miles":300,"origin_state":"OH","rate":700},{"destination_state":"PA","miles":310,"origin_state":"OH","rate":640},{"destination_state":"AZ","miles":550,"origin_state":"CA","rate":850}]`;
+var inputEl = document.getElementById("input");
+var outputEl = document.getElementById("output");
+document.getElementById("file").addEventListener("change", function (ev) {
+  var f = ev.target.files[0];
+  if (!f) { return; }
+  var reader = new FileReader();
+  reader.onload = function () { inputEl.value = String(reader.result); };
+  reader.readAsText(f);
+});
+function loadSample() { inputEl.value = SAMPLE_LANES; }
+document.getElementById("sample").addEventListener("click", loadSample);
+document.getElementById("run").addEventListener("click", function () {
+  var report = window.runTool(inputEl.value, {
+    format: document.getElementById("format").value,
+    check: document.getElementById("check").checked
+  });
+  outputEl.textContent = report.replace(/\n$/, "");
+});
+document.getElementById("download").addEventListener("click", function () {
+  var blob = new Blob([outputEl.textContent + "\n"], { type: "text/plain" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "lane-heatmap-data-report.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+loadSample();
+</script>
+</body>
+</html>

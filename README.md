@@ -1,4 +1,5 @@
 # lane-heatmap-data
+**Live tool:** https://aamirtechs.github.io/lane-heatmap-data/ (runs in your browser, no install)
 
 A zero-dependency Python CLI and importable library that turns a lane book
 JSON file into a state-pair rate matrix, as CSV and as a Markdown report.
