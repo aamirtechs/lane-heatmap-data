@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lane-heatmap-data"
+version = "1.0.0"
+description = "Convert a lane book JSON file into a state-pair rate matrix as CSV and Markdown"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+[project.scripts]
+lane-heatmap = "lane_heatmap.cli:main"
+
+[tool.setuptools]
+packages = ["lane_heatmap"]
